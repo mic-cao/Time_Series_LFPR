@@ -1,0 +1,550 @@
+---
+title: "4550 Final Project"
+author: "Michael Cao, Winston Park"
+output:
+  html_document: default
+  pdf_document: default
+---
+
+```{r setup, include=FALSE, warning=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+library(xts)
+library(forecast)
+library(astsa)
+library(tseries)
+library(vars)
+library(quantmod) #Delt(A)
+library(rugarch)
+library(lubridate)
+```
+
+Pre model-fitting
+
+i) Importing Raw Data
+```{r}
+LFPR <- read.csv('LFPR.csv')[1:864,] # cut off before COVID
+UNRATE <- read.csv('UNRATE.csv')[1:864,]
+INFLATION <- read.csv('INFLATION.csv')[1:864,]
+POPLEVEL <- read.csv('POPLEVEL.csv')[1:864,]
+
+LFPR <- xts(LFPR[,2], order.by=as.Date(LFPR$DATE))
+UNRATE <- xts(UNRATE[,2], order.by=as.Date(UNRATE$DATE))
+INFLATION <- xts(INFLATION[,2], order.by=as.Date(INFLATION$DATE))
+POPLEVEL <- xts(POPLEVEL[,2], order.by=as.Date(POPLEVEL$DATE))
+```
+
+ii) Visualize Attempted Transformations
+```{r}
+plot(LFPR)
+plot(diff(LFPR))
+plot(diff(LFPR, lag = 12)) # t-12
+```
+
+```{r}
+plot(UNRATE)
+plot(diff(UNRATE))
+```
+
+```{r}
+plot(INFLATION)
+plot(diff(log(INFLATION)))
+```
+
+```{r}
+plot(POPLEVEL)
+plot(diff(sqrt(POPLEVEL)))
+plot(quantmod::Delt(POPLEVEL))
+```
+
+iii) Stationary Assumptions
+```{r, warning=FALSE}
+tseries::adf.test(LFPR) # not stationary
+
+forecast::ndiffs(LFPR) # d=1 yields stationarity
+tseries::adf.test(diff(LFPR)[-1]) 
+```
+
+iv) ACF and PACF
+```{r}
+acf(LFPR)
+pacf(LFPR)
+```
+
+```{r}
+acf(diff(LFPR)[-1], lag.max=25) # suggests periodicity
+pacf(diff(LFPR)[-1], lag.max=25)
+```
+
+Model 1: SARIMA Model
+
+i) Periodogram
+```{r}
+tmp1 <- abs(fft(LFPR))^2/(2*pi*length(LFPR))
+plot(2:(length(LFPR)/2)-1, tmp1[2:(length(LFPR)/2)],
+     ylab="Periodogram", log="y", type='l',xlab='')
+
+ordered <- order(tmp1[1:(length(LFPR)/2)], decreasing = T)
+head(ordered[ordered > 12], 3) - 1 # peaks - use as frequency
+```
+Since the peaks in the periodogram are all to multiples of 12, it might be due to underlying economic cycles of 1 year, 1/2 year, or 1/4 year for LFPR, which suggests the presence of harmonics in the data. Therefore, we consider seasonally differencing the data, while still model using a SARIMA framework with S=12 (since 1/12 is the main frequency).
+
+ii) Construct SARIMA Model
+```{r}
+LFPR2 <- ts(LFPR, frequency = 12)
+acf2(LFPR2, main = 'Series: LFPR')
+```
+Based on the PACF plot, we see a significant spike of the PACF plot a 1 year. We consider modeling LFPR with S=12, while checking with the seasonally differenced data to confirm this.
+
+```{r}
+acf2(diff(diff(LFPR2), lag=12))
+```
+Based on the ACF and PACF of the seasonally differenced series, we conclude that AR order of 1 and MA order of 2 should be used on the seasonal component, as the periodic trend does not persist.
+
+```{r}
+best.sarima.model <- auto.arima(LFPR2, seasonal=T)
+                                # ARIMA(2,1,2)(2,0,0)[12]
+                                # AIC: -0.2088
+print(best.sarima.model)
+sarima(LFPR2,p=2,d=1,q=2,P=1,D=1,Q=2,S=12)
+```
+Although the ACF plot and QQ-plot of the residuals both look good, confirming a part of the assumptions, the standardized residual plot shows significant sign of heteroskedasticity - as the variability of the residuals decreases when lag value increases, and the Ljung-Box statistic has p-values very close to 0, indicating non-independent errors. We decide to fix this by fitting a GARCH model on the residuals of our SARIMA model.
+
+```{r}
+sarima_resid <- residuals(best.sarima.model)
+Box.test(sarima_resid, lag = 24, type = "Ljung-Box")
+Box.test(sarima_resid, lag = 60, type = "Ljung-Box")
+```
+A Ljung-Box test on the residuals confirms the presence of serial correlation.
+
+iii) Analyze Residuals with GARCH
+```{r}
+spec <- ugarchspec(mean.model = list(armaOrder= c(0,0)),
+                   variance.model = list(garchOrder= c(1,2)))
+best.garch.model <- ugarchfit(spec, data = sarima_resid)
+print(best.garch.model)
+```
+In general, a higher GARCH order captures longer-term persistence in volatility and allows for more complex volatility dynamics. It considers a larger number of past squared residuals in the conditional variance equation. On the other hand, a higher ARCH order captures shorter-term volatility clustering or heteroscedasticity in the data. Here, a GARCH order of 1 and ARCH order of 2 returns p-value much higher than 0.05 for different lags on both the weighted Ljung-Box test of on standardized residuals and standardized squared residuals. Although the Person goodness-of-fit test does not return p-values greater than 0.05 for some lags, it solves the issue of heteroscedasticity in our original SARIMA residuals.
+
+```{r include=FALSE}
+ahead = 24
+pred <- sarima.for(LFPR2, n.ahead = ahead, plot = F,
+                   p=2,d=1,q=2,P=1,D=1,Q=2,S=12)$pred
+dates_ahead <- seq(as.Date("2020-01-01"),
+                   as.Date("2020-01-01")+ months(ahead-1), 
+                   by = "1 month")
+pred <- rbind(LFPR[864], xts(pred, order.by = dates_ahead))
+
+combined_xts <- merge(LFPR[750:864], pred)
+plot(combined_xts, col = c('black', "red"), 
+     main = paste0(ahead, '-month Ahead Prediction with SARIMA'))
+```
+```{r}
+addLegend("topright", legend.names = c('True LFPR', 'Predicted LFPR'), 
+          col = c('black', 'red'), lty = 1, lwd = 2, cex = 0.8)
+```
+
+
+Model 2: Vector Autoregressive and Granger Causality
+
+i) Variable Selection
+```{r}
+dat <- xts::cbind.xts(LFPR, 
+                      UNRATE,
+                      1/log(INFLATION),
+                      1/POPLEVEL)
+names(dat) <- c('LFPR', 'UNRATE', 'INFLATION', 'POPLEVEL')
+```
+
+```{r}
+pairs(data.frame(dat))
+```
+
+```{r}
+cor(dat)
+```
+
+```{r}
+summary(lm(LFPR~UNRATE, data=dat)) # very poor R^2
+summary(lm(LFPR~INFLATION, data=dat)) 
+summary(lm(LFPR~POPLEVEL, data=dat))
+```
+Based on this, we drop UNRATE from our dataframe, and only keep LFPR with 1/log(INFLATION) and 1/POPLEVEL.
+```{r}
+dat <- dat[ , !names(dat)=='UNRATE']
+```
+
+ii) Construct VAR Model
+```{r}
+freq = 1/12
+df = data.frame(trend = 1:nrow(dat),
+                cos1 = cos(2*pi*freq*1:nrow(dat)),
+                sin1 = sin(2*pi*freq*1:nrow(dat)))
+VARselect(dat, type = "const", exogen = df, lag.max=30)$selection
+                                                   # AIC: -58.919
+var.model <- VAR(dat, p = 25, type = "const", exogen = df)
+```
+
+```{r}
+freq = 1/12
+df = data.frame(cos1 = cos(2*pi*freq*1:nrow(dat)),
+                sin1 = sin(2*pi*freq*1:nrow(dat)))
+VARselect(dat, type = "const", exogen = df, lag.max=30)$selection
+                                                   # AIC: -58.900
+var.model <- VAR(dat, p = 25, type = "const", exogen = df)
+```
+
+```{r}
+df = data.frame(trend = 1:nrow(dat))
+VARselect(dat, type = "const", exogen = df, lag.max=30)$selection
+                                                   # AIC: -58.901
+var.model <- VAR(dat, p = 25, type = "const", exogen = df)
+```
+
+```{r}
+VARselect(dat, type = "const", lag.max=30)$selection
+                                      # AIC: -58.881
+var.model <- VAR(dat, p = 25, type = "const")
+```
+
+```{r}
+freq = 1/12
+freq1 = 1/6
+
+df = data.frame(cos1 = cos(2*pi*freq*1:nrow(dat)),
+                sin1 = sin(2*pi*freq*1:nrow(dat)),
+                cos2 = cos(2*pi*freq1*1:nrow(dat)),
+                sin2 = sin(2*pi*freq1*1:nrow(dat)))
+VARselect(dat, type = "const", exogen = df, lag.max=30)$selection
+                                                   # AIC: -58.914
+var.model <- VAR(dat, p = 25, type = "const", exogen = df)
+```
+
+```{r}
+freq = 1/12
+freq1 = 1/6
+
+df = data.frame(trend = 1:nrow(dat),
+                cos1 = cos(2*pi*freq*1:nrow(dat)),
+                sin1 = sin(2*pi*freq*1:nrow(dat)),
+                cos2 = cos(2*pi*freq1*1:nrow(dat)),
+                sin2 = sin(2*pi*freq1*1:nrow(dat)))
+VARselect(dat, type = "const", exogen = df, lag.max=30)$selection
+                                                   # AIC: -58.933
+var.model <- VAR(dat, p = 25, type = "const", exogen = df)
+```
+
+```{r}
+freq = 1/12
+freq1 = 1/6
+freq2 = 1/4
+
+df = data.frame(cos1 = cos(2*pi*freq*1:nrow(dat)),
+                sin1 = sin(2*pi*freq*1:nrow(dat)),
+                cos2 = cos(2*pi*freq1*1:nrow(dat)),
+                sin2 = sin(2*pi*freq1*1:nrow(dat)),
+                cos3 = cos(2*pi*freq2*1:nrow(dat)),
+                sin3 = sin(2*pi*freq2*1:nrow(dat)))
+VARselect(dat, type = "const", exogen = df, lag.max=30)$selection
+                                                   # AIC: -58.928
+var.model <- VAR(dat, p = 25, type = "const", exogen = df)
+```
+
+```{r}
+freq = 1/12
+freq1 = 1/6
+freq2 = 1/4
+
+df = data.frame(trend = 1:nrow(dat),
+                cos1 = cos(2*pi*freq*1:nrow(dat)),
+                sin1 = sin(2*pi*freq*1:nrow(dat)),
+                cos2 = cos(2*pi*freq1*1:nrow(dat)),
+                sin2 = sin(2*pi*freq1*1:nrow(dat)),
+                cos3 = cos(2*pi*freq2*1:nrow(dat)),
+                sin3 = sin(2*pi*freq2*1:nrow(dat)))
+VARselect(dat, type = "const", exogen = df, lag.max=30)$selection
+                                                   # BEST MODEL!
+                                                   # AIC: -58.947
+best.var.model <- VAR(dat, p = 25, type = "const", exogen = df)
+```
+
+```{r}
+summary(best.var.model)$varresult$LFPR
+summary(best.var.model)$corres
+```
+
+```{r include=FALSE}
+ahead = 24
+df2 = data.frame(trend = 1:ahead+nrow(dat),
+                 cos1 = cos(2*pi*freq*(1:ahead+nrow(dat))),
+                 sin1 = sin(2*pi*freq*(1:ahead+nrow(dat))),
+                 cos2 = cos(2*pi*freq1*(1:ahead+nrow(dat))),
+                 sin2 = sin(2*pi*freq1*(1:ahead+nrow(dat))),
+                 cos3 = cos(2*pi*freq2*(1:ahead+nrow(dat))),
+                 sin3 = sin(2*pi*freq2*(1:ahead+nrow(dat))))
+pred <- predict(best.var.model, 
+                dumvar = df2, 
+                n.ahead = ahead)$fcst$LFPR[,1]
+
+dates_ahead <- seq(as.Date("2020-01-01"),
+                   as.Date("2020-01-01")+ months(ahead-1), 
+                   by = "1 month")
+pred <- rbind(LFPR[864], xts(pred, order.by = dates_ahead))
+
+combined_xts <- merge(LFPR[750:864], pred)
+plot(combined_xts, col = c('black', "red"), 
+     main = paste0(ahead, '-month Ahead Prediction with VAR'))
+```
+```{r}
+addLegend("topright", legend.names = c('True LFPR', 'Predicted LFPR'), 
+          col = c('black', 'red'), lty = 1, lwd = 2, cex = 0.8)
+```
+
+iii) Granger Causality
+```{r}
+df_INFLATION = data.frame(trend = 1:nrow(dat),
+                          cos1 = cos(2*pi*freq*1:nrow(dat)),
+                          sin1 = sin(2*pi*freq*1:nrow(dat)),
+                          cos2 = cos(2*pi*freq1*1:nrow(dat)),
+                          sin2 = sin(2*pi*freq1*1:nrow(dat)),
+                          cos3 = cos(2*pi*freq2*1:nrow(dat)),
+                          sin3 = sin(2*pi*freq2*1:nrow(dat)),
+                          dat$POPLEVEL)
+VARselect(dat[, c('LFPR', 'INFLATION')], 
+          type = "const", 
+          exogen = df_INFLATION,  
+          lag.max = 50)$selection
+var.model <- VAR(dat[, c('LFPR', 'INFLATION')], 
+                 p=49, type = "const", exogen = df_INFLATION)
+causality(var.model, cause = "INFLATION")$Granger
+```
+
+```{r}
+df_POPLEVEL = data.frame(trend = 1:nrow(dat),
+                         cos1 = cos(2*pi*freq*1:nrow(dat)),
+                         sin1 = sin(2*pi*freq*1:nrow(dat)),
+                         cos2 = cos(2*pi*freq1*1:nrow(dat)),
+                         sin2 = sin(2*pi*freq1*1:nrow(dat)),
+                         cos3 = cos(2*pi*freq2*1:nrow(dat)),
+                         sin3 = sin(2*pi*freq2*1:nrow(dat)),
+                         dat$INFLATION)
+VARselect(dat[, c('LFPR', 'POPLEVEL')], 
+          type = "const", 
+          exogen = df_POPLEVEL,  
+          lag.max = 50)$selection
+var.model <- VAR(dat[, c('LFPR', 'POPLEVEL')], 
+                 p=49, type = "const", exogen = df_POPLEVEL)
+causality(var.model, cause = "POPLEVEL")$Granger
+```
+
+Model Comparison
+
+i) Predictions Plots
+```{r, warning=FALSE}
+date_range <- seq(as.Date("1948-01-01"), 
+                  as.Date("2019-12-01"), by = "1 month")
+
+sarima_fitted <- fitted(best.sarima.model)
+sarima_fitted <- xts(sarima_fitted, order.by = date_range)
+
+var_fitted <- c(as.numeric(LFPR[1:best.var.model$p]),
+                fitted(best.var.model)[,'LFPR'])
+var_fitted <- xts(var_fitted, order.by = date_range)
+
+combined_xts <- merge(LFPR, sarima_fitted, var_fitted)
+```
+
+```{r include=FALSE}
+colors <- rainbow(3)
+plot(combined_xts, main = 'Fitted SARIMA vs VAR',
+     col = colors, lwd = c(1,1,2))
+```
+```{r}
+addLegend("topleft", legend.names = c('True LFPR', 'SARIMA', 'VAR'), 
+          col = colors, lty = 1, lwd = 2, cex = 0.8)
+```
+
+```{r include=FALSE}
+colors <- rainbow(3)
+plot(combined_xts[1:(12*(2000-1948)),], 
+     main = 'Fitted SARIMA vs VAR (Pre-2000)', 
+     col = colors, lwd = c(1,1,2))
+```
+```{r}
+addLegend("topleft", legend.names = c('True LFPR', 'SARIMA', 'VAR'), 
+          col = colors, lty = 1, lwd = 2, cex = 0.8)
+```
+
+```{r include=FALSE}
+colors <- rainbow(3)
+plot(combined_xts[(12*(2000-1948)+1):864,], 
+     main = 'Fitted SARIMA vs VAR (Post-2000)', 
+     col = colors, lwd = c(1,1,2))
+```
+```{r}
+addLegend("topright", legend.names = c('True LFPR', 'SARIMA', 'VAR'), 
+          col = colors, lty = 1, lwd = 2, cex = 0.8)
+```
+The plots above shows the fitted lines of both model-fitting methods without new predictions. The SARIMA model is much more volatile compared to the VAR model, especially in the more recent data, indicating that the VAR model is a much-better fitted model.
+
+```{r, warning=FALSE}
+ahead = 24
+dates_ahead <- seq(as.Date("2020-01-01"),
+                   as.Date("2020-01-01")+ months(ahead-1), 
+                   by = "1 month")
+
+# VAR Predictions
+df2 = data.frame(trend = 1:ahead+nrow(dat),
+                 cos1 = cos(2*pi*freq*(1:ahead+nrow(dat))),
+                 sin1 = sin(2*pi*freq*(1:ahead+nrow(dat))),
+                 cos2 = cos(2*pi*freq1*(1:ahead+nrow(dat))),
+                 sin2 = sin(2*pi*freq1*(1:ahead+nrow(dat))),
+                 cos3 = cos(2*pi*freq2*(1:ahead+nrow(dat))),
+                 sin3 = sin(2*pi*freq2*(1:ahead+nrow(dat))))
+pred.var <- predict(best.var.model, dumvar = df2, 
+                    n.ahead = ahead)$fcst$LFPR[,1]
+pred.var <- rbind(LFPR[864], xts(pred.var, order.by = dates_ahead))
+
+# SARIMA Predictions
+pred.sarima <- sarima.for(LFPR, n.ahead = ahead, plot = F,
+                          p=2, d=1, q=2, P=1, D=1, Q=2, S=12)$pred
+pred.sarima <- rbind(LFPR[864], xts(pred.sarima, order.by = dates_ahead))
+```
+
+```{r include=FALSE}
+combined_xts <- merge(LFPR, pred.sarima, pred.var)
+colors <- rainbow(3)
+plot(combined_xts[750:(864+ahead),], 
+     main = paste0(ahead, '-month Ahead Prediction'), 
+     col = colors, lwd = 1.5)
+```
+```{r}
+addLegend("topright", col = colors[2:3], lty = 1, lwd = 2, cex = 0.8,
+          legend.names = c('SARIMA', 'VAR'))
+```
+This plot here shows the 24-step ahead prediction using each model.
+
+ii) Out-of-sample Error (2010-2019)
+```{r}
+ahead = 120
+dates_ahead <- seq(as.Date("2020-01-01") - months(ahead),
+                   as.Date("2019-12-01"), by = "1 month")
+LFPR_train <- LFPR[1:(864-ahead)]
+LFPR_test <- LFPR[(864-ahead):864]
+```
+
+```{r, warning=FALSE}
+# SARIMA Model MSE
+pred.sarima <- sarima.for(LFPR_train, n.ahead = ahead, plot = F,
+                          p=2, d=1, q=2, P=1, D=1, Q=2, S=12)$pred
+pred.sarima <- xts(pred.sarima, order.by = dates_ahead)
+mse.sarima <- (1/ahead)*sum((LFPR_test - pred.sarima)^2)
+print(mse.sarima)
+```
+
+```{r}
+# VAR Model MSE
+dat_train <- dat[1:(864-ahead),]
+df = data.frame(trend = 1:nrow(dat_train),
+                cos1 = cos(2*pi*freq*1:nrow(dat_train)),
+                sin1 = sin(2*pi*freq*1:nrow(dat_train)),
+                cos2 = cos(2*pi*freq1*1:nrow(dat_train)),
+                sin2 = sin(2*pi*freq1*1:nrow(dat_train)),
+                cos3 = cos(2*pi*freq2*1:nrow(dat_train)),
+                sin3 = sin(2*pi*freq2*1:nrow(dat_train)))
+test.var.model <- VAR(dat_train, p = 25, type = "const", exogen = df)
+df2 = data.frame(trend = 1:ahead+nrow(dat_train),
+                 cos1 = cos(2*pi*freq*(1:ahead+nrow(dat_train))),
+                 sin1 = sin(2*pi*freq*(1:ahead+nrow(dat_train))),
+                 cos2 = cos(2*pi*freq1*(1:ahead+nrow(dat_train))),
+                 sin2 = sin(2*pi*freq1*(1:ahead+nrow(dat_train))),
+                 cos3 = cos(2*pi*freq2*(1:ahead+nrow(dat_train))),
+                 sin3 = sin(2*pi*freq2*(1:ahead+nrow(dat_train))))
+pred.var <- predict(test.var.model, dumvar = df2, 
+                    n.ahead = ahead)$fcst$LFPR[,1]
+pred.var <- xts(pred.var, order.by = dates_ahead)
+mse.var <- (1/ahead)*sum((LFPR_test - pred.var)^2)
+print(mse.var)
+```
+It should be noted that although in this case the SARIMA model has a lower out-of-sample error than the VAR model, in certain cases VAR performs better (i.e. ahead = a different number). The trend is very hard to predict since if the cutoff of a training set is a turning point, the predictions would fail miserably. However, the TBATS model (see the last part) is still able to capture this surprisingly well, although we are not including it into our report, since it is not a model type that can clearly answer our research questions despite a superior fit.
+
+```{r include=FALSE}
+pred.sarima <- rbind(LFPR[864-ahead], pred.sarima)
+pred.var <- rbind(LFPR[864-ahead], pred.var)
+combined_xts <- merge(LFPR, pred.sarima, pred.var)
+colors <- rainbow(3)
+plot(combined_xts[500:864,], 
+     main = 'Out-of-sample Forecast (2010-2019)', 
+     col = colors, lwd = 1.5)
+```
+```{r}
+addLegend("topright", col = colors, lty = 1, lwd = 2, cex = 0.8,
+          legend.names = c('True LFPR', 'SARIMA', 'VAR'))
+```
+
+---------------------------------------------------------
+Additional Ideas (not included in our report)
+
+TBATS State-Space Model (specifically designed to handle multiple seasonal patterns)
+```{r}
+tbats.model <- tbats(LFPR2, seasonal.periods = 12)
+print(tbats.model) # AIC: 3531.981
+```
+
+```{r}
+tbats.model <- tbats(LFPR2, seasonal.periods = c(12,6))
+print(tbats.model) # AIC: 3563.784
+```
+
+```{r}
+best.tbats.model <- tbats(LFPR2, seasonal.periods = c(216,144,72,12))
+print(best.tbats.model) # AIC: 3463.498 - BEST MODEL!
+```
+
+```{r}
+tbats.model <- tbats(LFPR2, seasonal.periods = c(216,144,72,12,6))
+print(tbats.model) # AIC: 3580.569
+```
+
+```{r include=FALSE}
+ahead = 24
+pred <- forecast(best.tbats.model, h=ahead)$mean
+
+dates_ahead <- seq(as.Date("2020-01-01"),
+                   as.Date("2020-01-01")+ months(ahead-1), 
+                   by = "1 month")
+pred <- rbind(LFPR[864], xts(pred, order.by = dates_ahead))
+
+combined_xts <- merge(LFPR[750:864], pred)
+plot(combined_xts, col = c('black', "red"), 
+     main = paste0(ahead, '-month Ahead Prediction with TBATS'))
+```
+```{r}
+addLegend("topright", legend.names = c('True LFPR', 'Predicted LFPR'), 
+          col = c('black', 'red'), lty = 1, lwd = 2, cex = 0.8)
+```
+
+```{r include=FALSE}
+ahead = 120
+LFPR2_train <- LFPR2[1:(864-ahead)]
+best.tbats.model <- tbats(LFPR2_train, 
+                          seasonal.periods = c(216,144,72,12))
+dates_ahead <- seq(as.Date("2020-01-01") - months(ahead),
+                   as.Date("2019-12-01"), by = "1 month")
+pred.tbats <- forecast(best.tbats.model, h=ahead)$mean
+pred.tbats <- xts(pred.tbats, order.by = dates_ahead)
+mse.tbats <- (1/ahead)*sum((LFPR_test - pred.tbats)^2)
+print(mse.tbats)
+```
+```{r include=FALSE}
+pred.tbats <- rbind(LFPR[864-ahead], pred.tbats)
+combined_xts <- merge(LFPR, pred.sarima, pred.var, pred.tbats)
+colors <- rainbow(4)
+plot(combined_xts[500:864,], 
+     main = 'Out-of-sample Forecast with TBATS', 
+     col = colors, lwd = 1.5)
+```
+```{r}
+addLegend("topright", col = colors, lty = 1, lwd = 2, cex = 0.8,
+          legend.names = c('True LFPR', 'SARIMA', 'VAR', 'TBATS'))
+```
+TBATS model, when incorporating long term cycles, outperforms both SARIMA and VAR models.
