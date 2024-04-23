@@ -23,7 +23,7 @@ We collected non-seasonally adjusted LFPR data along with other economic indicat
 
 Below are the out-of-sample predictions for a few different time series models (SARIMA-GARCH, VARX, and TBATS):
  <p align="center">
- <img src="https://github.com/mic-cao/Time_Series_LFPR/blob/main/tbats.png" alt="OOS" width="500">
+ <img src="https://github.com/mic-cao/Time_Series_LFPR/blob/main/tbats.png" alt="OOS" width="650">
  </p>
 
 ## Conclusion
