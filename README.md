@@ -1,6 +1,6 @@
 # Time Series Analysis of United States Labor Force Participation Rate
 
-**Authors:** Michael Cao (yc849), Winston Park (wp254)
+**Authors:** Michael Cao, Winston Park
 
 ## Introduction
 
