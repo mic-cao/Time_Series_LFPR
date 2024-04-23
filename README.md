@@ -20,9 +20,9 @@ We collected non-seasonally adjusted LFPR data along with other economic indicat
 - **Model 2 (VARX):** Identified significant relationships between LFPR, inflation, and population level. Granger causality tests suggest a causal link between LFPR and inflation.
 
 Below we used an out-of-sample approach to compare several time series models (SARIMA-GARCH, VARX, and TBATS):
-<p align="center">
-<img src="https://github.com/mic-cao/Time_Series_LFPR/blob/main/tbats.png" alt="OOS" width="650">
-</p>
+  <p align="center">
+  <img src="https://github.com/mic-cao/Time_Series_LFPR/blob/main/tbats.png" alt="OOS" width="650">
+  </p>
 
 ## Conclusion
 
