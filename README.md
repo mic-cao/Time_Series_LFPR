@@ -27,4 +27,4 @@ For detailed results and analysis, refer to the full report in the appendices.
 
 ---
 
-For more details, refer to the [full report](link_to_paper).
+For more details, refer to the [full report](https://github.com/mic-cao/Time_Series_LFPR/blob/main/Final_Report.pdf).
