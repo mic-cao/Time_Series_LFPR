@@ -19,7 +19,7 @@ We collected non-seasonally adjusted LFPR data along with other economic indicat
 - **Model 1 (SARIMA-GARCH):** Forecasted LFPR shows a stable trend with slight variations over the forecast period.
 - **Model 2 (VARX):** Identified significant relationships between LFPR, inflation, and population level. Granger causality tests suggest a causal link between LFPR and inflation.
 
-Below we used an out-of-sample approach to access the short-term model performance of several time series models (SARIMA-GARCH, VARX, and TBATS):
+Below, we used an out-of-sample approach to access the short-term model performance of several time series models (SARIMA-GARCH, VARX, and TBATS):
   <p align="center">
   <img src="https://github.com/mic-cao/Time_Series_LFPR/blob/main/tbats.png" alt="OOS" width="650">
   </p>
