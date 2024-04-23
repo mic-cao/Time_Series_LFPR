@@ -12,7 +12,7 @@ LFPR is a key factor in economic growth, and understanding its trends can provid
 
 ## Methodology
 
-We collected non-seasonally adjusted LFPR data along with other economic indicators from January 1948 to December 2019. Our analysis includes data preparation, model building, and interpretation of results. We employed two main models: SARIMA + GARCH and VARX, to forecast LFPR and investigate its relationships with other variables.
+We collected non-seasonally adjusted LFPR data along with other economic indicators from January 1948 to December 2019. Our analysis includes data preparation, model building, and interpretation of results. We employed two main models: SARIMA-GARCH and VARX, to forecast LFPR and investigate its relationships with other variables.
 
 ## Results
 
